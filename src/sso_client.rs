@@ -122,8 +122,31 @@ impl Client {
             Ok(client) => client,
         };
 
-        let provider_metadata = match CoreProviderMetadata::discover_async(issuer_url, &http_client).await {
-            Err(err) => err!(format!("Failed to discover OpenID provider: {err}")),
+        // Manually fetch the OpenID discovery doc so we can normalize the
+        // `issuer` claim before strict validation. Some providers can advertise
+        // the issuer with a trailing slash while the configured authority
+        // representation strips it, causing a mismatch on discovery.
+        let discovery_url = format!(
+            "{}/.well-known/openid-configuration",
+            issuer_url.url().as_str().trim_end_matches('/')
+        );
+        let discovery_response = match http_client.get(&discovery_url).send().await {
+            Err(err) => err!(format!("Failed to fetch OpenID discovery doc ({discovery_url}): {err}")),
+            Ok(resp) => resp,
+        };
+        let mut discovery_json: Value = match discovery_response.json().await {
+            Err(err) => err!(format!("Failed to parse OpenID discovery doc as JSON: {err}")),
+            Ok(json) => json,
+        };
+        if let Some(iss) = discovery_json.get("issuer").and_then(|v| v.as_str()) {
+            let normalized = iss.trim_end_matches('/').to_owned();
+            if normalized != iss {
+                debug!("Normalized OpenID issuer claim by trimming trailing slash: {iss} -> {normalized}");
+                discovery_json["issuer"] = Value::String(normalized);
+            }
+        }
+        let provider_metadata: CoreProviderMetadata = match serde_json::from_value(discovery_json) {
+            Err(err) => err!(format!("Failed to deserialize OpenID provider metadata: {err}")),
             Ok(metadata) => metadata,
         };
 

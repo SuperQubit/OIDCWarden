@@ -1312,8 +1312,13 @@ fn validate_config(cfg: &ConfigItems, on_update: bool) -> Result<(), Error> {
 }
 
 fn validate_internal_sso_issuer_url(sso_authority: &String) -> Result<openidconnect::IssuerUrl, Error> {
-    match openidconnect::IssuerUrl::new(sso_authority.clone()) {
-        Err(err) => err!(format!("Invalid sso_authority URL ({sso_authority}): {err}")),
+    // Some providers (e.g. Authentik) can advertise an issuer URI ending with '/',
+    // while users may configure `SSO_AUTHORITY` without it. Normalizing here avoids
+    // discovery-time issuer mismatch errors caused only by trailing slash differences.
+    let normalized = sso_authority.trim_end_matches('/').to_owned();
+
+    match openidconnect::IssuerUrl::new(normalized.clone()) {
+        Err(err) => err!(format!("Invalid sso_authority URL ({normalized}): {err}")),
         Ok(issuer_url) => Ok(issuer_url),
     }
 }

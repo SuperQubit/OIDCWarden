@@ -17,7 +17,8 @@ The following configurations are available
 - `SSO_SIGNUPS_MATCH_EMAIL`: On SSO Signup if a user with a matching email already exists make the association (default `true`)
 - `SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION`: Allow unknown email verification status (default `false`). Allowing this with `SSO_SIGNUPS_MATCH_EMAIL` open potential account takeover.
 - `SSO_AUTHORITY` : the OpenID Connect Discovery endpoint of your SSO
-  - Should not include the `/.well-known/openid-configuration` part and no trailing `/`
+  - Should not include the `/.well-known/openid-configuration` part
+  - A trailing `/` is accepted and normalized automatically
  	- $SSO_AUTHORITY/.well-known/openid-configuration should return the a json document: https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationResponse
 - `SSO_SCOPES` : Optional, allow to override scopes if needed (default `"email profile"`)
 - `SSO_AUTHORIZE_EXTRA_PARAMS` : Optional, allow to add extra parameter to the authorize redirection (default `""`)
@@ -165,7 +166,7 @@ Starting with `2024.2` version you will need to add the `offline_access` scope a
 
 Server configuration should look like:
 
-- `SSO_AUTHORITY=https://${domain}/application/o/${application_name}/` : trailing `/` is important
+- `SSO_AUTHORITY=https://${domain}/application/o/${application_name}/` (works with or without trailing `/`)
 - `SSO_SCOPES="email profile offline_access"`
 - `SSO_CLIENT_ID`
 - `SSO_CLIENT_SECRET`

@@ -3,7 +3,7 @@ use std::{borrow::Cow, sync::LazyLock, time::Duration};
 use openidconnect::{
     AccessToken, AdditionalClaims, AuthDisplay, AuthPrompt, AuthenticationFlow, AuthorizationCode,
     AuthorizationRequest, ClientId, ClientSecret, CsrfToken, EmptyExtraTokenFields, EndpointMaybeSet, EndpointNotSet,
-    EndpointSet, IdTokenClaims, IdTokenFields, Nonce, OAuth2TokenResponse,
+    EndpointSet, IdTokenClaims, IdTokenFields, JsonWebKeySet, Nonce, OAuth2TokenResponse,
     PkceCodeChallenge, PkceCodeVerifier, RefreshToken, ResponseType, Scope, StandardErrorResponse,
     StandardTokenResponse, UserInfoClaims,
     core::{
@@ -134,7 +134,11 @@ impl Client {
             Err(err) => err!(format!("Failed to fetch OpenID discovery doc ({discovery_url}): {err}")),
             Ok(resp) => resp,
         };
-        let mut discovery_json: Value = match discovery_response.json().await {
+        let discovery_text = match discovery_response.text().await {
+            Err(err) => err!(format!("Failed to read OpenID discovery doc response body: {err}")),
+            Ok(text) => text,
+        };
+        let mut discovery_json: Value = match serde_json::from_str(&discovery_text) {
             Err(err) => err!(format!("Failed to parse OpenID discovery doc as JSON: {err}")),
             Ok(json) => json,
         };
@@ -149,6 +153,17 @@ impl Client {
             Err(err) => err!(format!("Failed to deserialize OpenID provider metadata: {err}")),
             Ok(metadata) => metadata,
         };
+
+        // discover_async would normally fetch the JWKS automatically as part of
+        // building the ProviderMetadata. Our manual discovery flow skipped that
+        // step, so the metadata's JWKS field is empty and id_token signature
+        // verification later fails with "Signature verification failed". Fetch
+        // the JWKS now from the discovery jwks_uri and inject it.
+        let jwks = match JsonWebKeySet::<CoreJsonWebKey>::fetch_async(provider_metadata.jwks_uri(), &http_client).await {
+            Err(err) => err!(format!("Failed to fetch JWKS from {}: {err}", provider_metadata.jwks_uri().as_str())),
+            Ok(jwks) => jwks,
+        };
+        let provider_metadata = provider_metadata.set_jwks(jwks);
 
         let base_client = MetadataClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret));
 
@@ -275,7 +290,19 @@ impl Client {
                 }
 
                 let id_claims = match id_token.claims(&self.vw_id_token_verifier(), &oidc_nonce) {
-                    Ok(claims) => claims.clone(),
+                    Ok(claims) => {
+                        // Manual issuer match with trailing-slash normalization.
+                        // claims.issuer() returns &IssuerUrl (inherent method, not Option).
+                        let token_iss = claims.issuer().url().as_str();
+                        let configured = CONFIG.sso_authority();
+                        if token_iss.trim_end_matches('/') != configured.trim_end_matches('/') {
+                            Self::invalidate();
+                            err!(format!(
+                                "id_token issuer ({token_iss}) does not match configured SSO_AUTHORITY ({configured})"
+                            ));
+                        }
+                        claims.clone()
+                    }
                     Err(err) => {
                         Self::invalidate();
                         err!(format!("Could not read id_token claims, {err}"));
@@ -308,7 +335,11 @@ impl Client {
     }
 
     pub fn vw_id_token_verifier(&self) -> CoreIdTokenVerifier<'_> {
-        let mut verifier = self.core_client.id_token_verifier();
+        // Authentik 2026.x emits the `iss` claim in the id_token WITH a trailing
+        // slash. Disable strict library issuer match; JWKS signature validation
+        // still protects integrity. Manual normalized check is done by caller.
+        let mut verifier = self.core_client.id_token_verifier()
+            .require_issuer_match(false);
         if let Some(regex_str) = CONFIG.sso_audience_trusted() {
             match Regex::new(&regex_str) {
                 Ok(regex) => {
